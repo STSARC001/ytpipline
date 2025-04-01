@@ -107,7 +107,10 @@ class GoogleDriveUploader:
         if not os.path.exists(video_path):
             logger.warning(f"Video file not found: {video_path}")
         
-        if not os.path.exists(thumbnail_path):
+        # Check if thumbnail path is None or if file doesn't exist
+        if thumbnail_path is None:
+            logger.warning("Thumbnail path is None, skipping thumbnail upload")
+        elif not os.path.exists(thumbnail_path):
             logger.warning(f"Thumbnail file not found: {thumbnail_path}")
         
         # Generate enhanced SEO metadata
@@ -140,7 +143,7 @@ class GoogleDriveUploader:
                     )
                 
                 # 3. Upload the thumbnail
-                if os.path.exists(thumbnail_path):
+                if thumbnail_path is not None and os.path.exists(thumbnail_path):
                     thumbnail_id = self._upload_file(
                         thumbnail_path,
                         os.path.basename(thumbnail_path),

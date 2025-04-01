@@ -7,13 +7,22 @@ import logging
 import time
 from pathlib import Path
 import json
+import io
 from dotenv import load_dotenv
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 
 # Load environment variables
 load_dotenv()
 
 # Set up logging
 logger = logging.getLogger("YouTube-Pipeline.DriveUploader")
+
+# Define the scopes needed for Google Drive access
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 class GoogleDriveUploader:
     """
@@ -30,36 +39,50 @@ class GoogleDriveUploader:
         self.output_dir = Path(config.get("output_dir", "output/metadata"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.credentials_file = config.get("credentials_file", "credentials.json")
+        self.service = None
         self.initialize_drive_api()
         logger.info("GoogleDriveUploader initialized")
     
     def initialize_drive_api(self):
         """Initialize connection to Google Drive API."""
-        # In a real implementation, this would use Google Drive API client
-        # For demonstration, we'll just check if the credentials file exists
-        
         # Check if credentials file exists
-        if not os.path.exists(self.credentials_file) and self.credentials_file != "credentials.json":
+        if not os.path.exists(self.credentials_file):
             logger.warning(f"Google Drive credentials file not found: {self.credentials_file}")
-        
-        # Initialize drive connection flag
-        self.drive_connected = False
+            self.drive_connected = False
+            return
         
         try:
-            # This would be a real API initialization in a production implementation
-            # For demonstration, we'll simulate the connection
-            logger.info("Simulating Google Drive API initialization")
+            creds = None
+            # The file token.json stores the user's access and refresh tokens
+            token_path = os.path.join(os.path.dirname(self.credentials_file), 'token.json')
             
-            # Pretend we're checking for valid credentials
-            if os.getenv("GOOGLE_DRIVE_API_KEY"):
-                self.drive_connected = True
-                logger.info("Google Drive API initialized (simulated)")
-            else:
-                logger.warning("GOOGLE_DRIVE_API_KEY not found in environment variables")
-                logger.info("Google Drive uploads will be simulated")
-        
+            # If token.json exists, load credentials from it
+            if os.path.exists(token_path):
+                creds = Credentials.from_authorized_user_info(
+                    json.load(open(token_path)), SCOPES)
+            
+            # If there are no valid credentials, let the user log in
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        self.credentials_file, SCOPES)
+                    creds = flow.run_local_server(port=0)
+                
+                # Save the credentials for the next run
+                with open(token_path, 'w') as token:
+                    token.write(creds.to_json())
+            
+            # Build the Drive service
+            self.service = build('drive', 'v3', credentials=creds)
+            self.drive_connected = True
+            logger.info("Google Drive API initialized successfully")
+            
         except Exception as e:
             logger.error(f"Error initializing Google Drive API: {e}")
+            self.service = None
+            self.drive_connected = False
             logger.info("Google Drive uploads will be simulated")
     
     def upload(self, video_path, thumbnail_path, metadata):
@@ -80,11 +103,6 @@ class GoogleDriveUploader:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         folder_name = f"AI_Video_{timestamp}"
         
-        # In a real implementation, this would:
-        # 1. Create a folder on Google Drive
-        # 2. Upload video, thumbnail, and metadata files
-        # 3. Apply metadata to the video for YouTube compatibility
-        
         # Check if files exist
         if not os.path.exists(video_path):
             logger.warning(f"Video file not found: {video_path}")
@@ -100,22 +118,138 @@ class GoogleDriveUploader:
         with open(metadata_path, 'w') as f:
             json.dump(enhanced_metadata, f, indent=2)
         
-        # For demonstration, we'll simulate the upload
+        folder_id = None
+        video_id = None
+        thumbnail_id = None
+        metadata_id = None
+        drive_url = None
+        
+        if self.drive_connected and self.service:
+            try:
+                # 1. Create a folder on Google Drive
+                folder_id = self._create_drive_folder(folder_name)
+                
+                # 2. Upload the video file
+                if os.path.exists(video_path):
+                    video_id = self._upload_file(
+                        video_path, 
+                        os.path.basename(video_path),
+                        "video/mp4",
+                        folder_id,
+                        enhanced_metadata.get("description", "")
+                    )
+                
+                # 3. Upload the thumbnail
+                if os.path.exists(thumbnail_path):
+                    thumbnail_id = self._upload_file(
+                        thumbnail_path,
+                        os.path.basename(thumbnail_path),
+                        "image/jpeg",
+                        folder_id,
+                        "Thumbnail for " + enhanced_metadata.get("title", "video")
+                    )
+                
+                # 4. Upload the metadata file
+                if os.path.exists(metadata_path):
+                    metadata_id = self._upload_file(
+                        str(metadata_path),
+                        os.path.basename(metadata_path),
+                        "application/json",
+                        folder_id,
+                        "Metadata for " + enhanced_metadata.get("title", "video")
+                    )
+                
+                # Get the URL to the folder
+                if folder_id:
+                    drive_url = f"https://drive.google.com/drive/folders/{folder_id}"
+                    logger.info(f"Uploaded content to Google Drive folder: {drive_url}")
+                
+                upload_status = "uploaded"
+            except Exception as e:
+                logger.error(f"Error uploading to Google Drive: {e}")
+                upload_status = "error"
+                drive_url = None
+        else:
+            # Simulate the upload for demo purposes
+            logger.info("Simulating Google Drive upload (no credentials or connection)")
+            upload_status = "simulated"
+            drive_url = f"https://drive.google.com/simulated/{folder_name}"
+        
         upload_info = {
             "folder_name": folder_name,
+            "folder_id": folder_id,
             "video_path": video_path,
+            "video_id": video_id,
             "thumbnail_path": thumbnail_path,
+            "thumbnail_id": thumbnail_id,
             "metadata_path": str(metadata_path),
+            "metadata_id": metadata_id,
             "uploaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "status": "simulated" if not self.drive_connected else "uploaded",
-            "url": f"https://drive.google.com/simulated/{folder_name}",
+            "status": upload_status,
+            "url": drive_url,
             "title": enhanced_metadata.get("title"),
             "description": enhanced_metadata.get("description")[:100] + "..." if len(enhanced_metadata.get("description", "")) > 100 else enhanced_metadata.get("description"),
             "tags": enhanced_metadata.get("tags")
         }
         
-        logger.info(f"Video upload {'simulated' if not self.drive_connected else 'completed'}: {upload_info.get('title')}")
+        logger.info(f"Video upload {upload_status}: {upload_info.get('title')}")
         return upload_info
+    
+    def _create_drive_folder(self, folder_name):
+        """Create a folder on Google Drive."""
+        if not self.service:
+            return None
+            
+        try:
+            file_metadata = {
+                'name': folder_name,
+                'mimeType': 'application/vnd.google-apps.folder'
+            }
+            
+            folder = self.service.files().create(
+                body=file_metadata,
+                fields='id'
+            ).execute()
+            
+            logger.info(f"Created folder: {folder_name} with ID: {folder.get('id')}")
+            return folder.get('id')
+        except Exception as e:
+            logger.error(f"Error creating folder: {e}")
+            return None
+    
+    def _upload_file(self, file_path, file_name, mime_type, parent_folder_id=None, description=None):
+        """Upload a file to Google Drive."""
+        if not self.service:
+            return None
+            
+        try:
+            file_metadata = {
+                'name': file_name,
+                'description': description or f"Uploaded by YouTube Automation Pipeline on {time.strftime('%Y-%m-%d')}"
+            }
+            
+            # Add to folder if specified
+            if parent_folder_id:
+                file_metadata['parents'] = [parent_folder_id]
+            
+            # Upload the file
+            media = MediaFileUpload(
+                file_path,
+                mimetype=mime_type,
+                resumable=True
+            )
+            
+            file = self.service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            
+            logger.info(f"Uploaded file: {file_name} with ID: {file.get('id')}")
+            return file.get('id')
+        except Exception as e:
+            logger.error(f"Error uploading file: {e}")
+            return None
     
     def _enhance_metadata(self, metadata):
         """Enhance metadata with SEO optimization."""

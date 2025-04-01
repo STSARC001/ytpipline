@@ -42,48 +42,54 @@ class MultiModelPromptGenerator:
             logger.error(f"Failed to initialize Gemini: {e}")
             self.models["gemini"] = None
         
-        # Initialize LLama or similar open-source LLM
+        # Initialize a smaller, Colab-compatible LLM
         try:
-            llm_model_name = self.config.get("llm_model", "meta-llama/Llama-3-8b-instruct")
-            llm_tokenizer = AutoTokenizer.from_pretrained(llm_model_name)
+            # Use a smaller model instead of Llama 3 that works in Colab
+            # Options: "google/flan-t5-large", "bigscience/bloom-560m", or "EleutherAI/gpt-neo-125M"
+            llm_model_name = self.config.get("llm_model", "google/flan-t5-large")
+            logger.info(f"Attempting to initialize LLM: {llm_model_name}")
             
             # Only load model if config specifies to do so (might be resource intensive)
             if self.config.get("load_llm_model", False):
-                llm_model = AutoModelForCausalLM.from_pretrained(
-                    llm_model_name,
-                    device_map="auto",
-                    load_in_8bit=True
-                )
-                self.models["llm"] = pipeline(
-                    "text-generation",
-                    model=llm_model,
-                    tokenizer=llm_tokenizer,
-                    max_length=2048
-                )
-                logger.info(f"Initialized LLM model: {llm_model_name} (full model)")
+                try:
+                    llm_tokenizer = AutoTokenizer.from_pretrained(llm_model_name)
+                    llm_model = AutoModelForCausalLM.from_pretrained(
+                        llm_model_name, 
+                        device_map="auto",
+                        load_in_8bit=self.config.get("load_in_8bit", True)
+                    )
+                    self.models["llm"] = pipeline(
+                        "text-generation",
+                        model=llm_model,
+                        tokenizer=llm_tokenizer
+                    )
+                    logger.info(f"Initialized LLM model: {llm_model_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to load local LLM model, trying API approach: {e}")
+                    # Try to use the model through the Hugging Face API instead
+                    try:
+                        from transformers import pipeline
+                        self.models["llm"] = pipeline(
+                            "text-generation",
+                            model=llm_model_name
+                        )
+                        logger.info(f"Initialized LLM via pipeline API: {llm_model_name}")
+                    except Exception as e2:
+                        logger.error(f"Failed to initialize LLM via API: {e2}")
+                        self.models["llm"] = None
             else:
-                # For colab environments, we might use API-based access instead
-                self.models["llm"] = self._create_llm_api_access()
-                logger.info(f"Initialized LLM model: {llm_model_name} (API access)")
-                
+                # Use API endpoint if provided
+                api_endpoint = self.config.get("llm_api_endpoint", "")
+                if api_endpoint:
+                    # This would be an implementation to use a remote API
+                    logger.info(f"Using API endpoint for LLM: {api_endpoint}")
+                    self.models["llm"] = {"endpoint": api_endpoint}
+                else:
+                    logger.warning("No local model loading or API endpoint specified for LLM")
+                    self.models["llm"] = None
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")
             self.models["llm"] = None
-    
-    def _create_llm_api_access(self):
-        """Create an API-based access to LLM (for Colab environments)."""
-        # This would typically use an API client for hosted LLM services
-        # For demonstration, we'll create a simple wrapper
-        api_endpoint = self.config.get("llm_api_endpoint", "")
-        api_key = os.getenv("LLM_API_KEY", "")
-        
-        if not api_endpoint or not api_key:
-            logger.warning("LLM API endpoint or key not configured")
-            return None
-            
-        # Return a callable that will make API requests
-        # In a real implementation, this would use appropriate API client libraries
-        return lambda prompt: {"generated_text": "This is a placeholder for LLM API response"}
     
     def generate(self, params=None):
         """

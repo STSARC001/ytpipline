@@ -35,11 +35,21 @@ class AdvancedVideoCompiler:
         self.config = config
         self.output_dir = Path(config.get("output_dir", "output/video"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Check if we're in Google Colab
+        try:
+            import google.colab
+            self.in_colab = True
+            logger.info("Running in Google Colab environment - using lightweight video compilation methods")
+            self.config["simplified_mode"] = True
+        except:
+            self.in_colab = False
+        
         self.moviepy_available = mpy is not None
         self.ffmpeg_path = config.get("ffmpeg_path", "ffmpeg")
         self.transitions = config.get("transitions", ["fade", "dissolve", "wipe"])
         self.effects = config.get("effects", ["motion_blur", "color_enhance", "dynamic_zoom"])
-        logger.info(f"AdvancedVideoCompiler initialized (MoviePy available: {self.moviepy_available})")
+        logger.info(f"AdvancedVideoCompiler initialized (MoviePy available: {self.moviepy_available}, Colab mode: {self.in_colab})")
     
     def compile(self, animation_info, voiceover_info, params=None):
         """
@@ -137,6 +147,83 @@ class AdvancedVideoCompiler:
     def _compile_with_moviepy(self, selected_prompts, animations_by_prompt, 
                              voiceovers_by_prompt, output_path, style):
         """Compile video using MoviePy library."""
+        if not self.moviepy_available:
+            logger.warning("MoviePy is not available, falling back to FFmpeg")
+            return self._compile_with_ffmpeg(selected_prompts, animations_by_prompt, 
+                                            voiceovers_by_prompt, output_path, style)
+        
+        # In Colab with simplified mode, use minimal processing
+        if self.config.get("simplified_mode", False):
+            logger.info("Using simplified MoviePy compilation for Colab compatibility")
+            try:
+                # Create a placeholder video that will work in Colab
+                # For simplicity, we'll concatenate clips without fancy effects
+                clips = []
+                
+                # Process each animation clip
+                for prompt_id in selected_prompts:
+                    animations = animations_by_prompt.get(prompt_id, [])
+                    for anim in animations:
+                        path = anim.get("path")
+                        
+                        # If the path exists and is a proper video, add it
+                        if os.path.exists(path) and path.endswith(('.mp4', '.avi', '.mov')):
+                            try:
+                                clip = mpy.VideoFileClip(path)
+                                clips.append(clip)
+                            except Exception as e:
+                                logger.warning(f"Could not load clip {path}: {e}")
+                
+                # If we have no clips, create a placeholder
+                if not clips:
+                    # Create a black clip with text
+                    text_clip = mpy.TextClip(
+                        "YouTube Automation Pipeline\nPlaceholder Video", 
+                        fontsize=70, 
+                        color='white',
+                        size=(1280, 720)
+                    ).set_duration(5)
+                    clips = [text_clip]
+                
+                # Concatenate clips (simple method)
+                final_clip = mpy.concatenate_videoclips(clips, method="compose")
+                
+                # Add audio if it exists and is a proper audio file
+                for prompt_id in selected_prompts:
+                    voiceover = voiceovers_by_prompt.get(prompt_id)
+                    if voiceover and voiceover.get("path") and os.path.exists(voiceover.get("path")) and voiceover.get("path").endswith(('.mp3', '.wav')):
+                        try:
+                            audio = mpy.AudioFileClip(voiceover.get("path"))
+                            # Set audio to loop if shorter than video
+                            audio = audio.set_duration(final_clip.duration)
+                            final_clip = final_clip.set_audio(audio)
+                        except Exception as e:
+                            logger.warning(f"Could not load audio {voiceover.get('path')}: {e}")
+                
+                # Write the final clip with minimal settings
+                final_clip.write_videofile(
+                    output_path,
+                    codec='libx264',
+                    preset='ultrafast',  # Use fastest preset for Colab
+                    threads=2,  # Limit threads for Colab
+                    logger=None  # Reduce verbose output
+                )
+                
+                return {
+                    "output_path": str(output_path),
+                    "duration": final_clip.duration,
+                    "num_clips": len(clips),
+                    "style": style,
+                    "compiler": "moviepy_simplified",
+                    "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+            
+            except Exception as e:
+                logger.error(f"Simplified MoviePy compilation failed: {e}")
+                return self._compile_with_ffmpeg(selected_prompts, animations_by_prompt, 
+                                                voiceovers_by_prompt, output_path, style)
+        
+        # Original MoviePy implementation for non-Colab environments
         logger.info("Compiling video with MoviePy")
         
         # This would be a full MoviePy implementation in a real system
@@ -304,6 +391,70 @@ class AdvancedVideoCompiler:
         """Generate an attractive thumbnail for the video."""
         logger.info(f"Generating thumbnail: {output_path}")
         
+        # In simplified Colab mode, create a basic thumbnail
+        if self.config.get("simplified_mode", False):
+            logger.info("Using simplified thumbnail generation for Colab compatibility")
+            try:
+                # Find the first animation clip path
+                first_frame_path = None
+                for prompt_id in selected_prompts:
+                    animations = animations_by_prompt.get(prompt_id, [])
+                    if animations:
+                        # Select the first animation as source
+                        first_frame_path = animations[0].get("source_image")
+                        break
+                
+                # If we have a video clip, extract the first frame
+                if first_frame_path and first_frame_path.endswith(('.mp4', '.avi', '.mov')) and self.moviepy_available:
+                    try:
+                        video = mpy.VideoFileClip(first_frame_path)
+                        # Get the first frame and save as thumbnail
+                        video.save_frame(str(output_path), t=0)
+                        video.close()
+                        return {
+                            "path": str(output_path),
+                            "source": first_frame_path,
+                            "title": title,
+                            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                    except Exception as e:
+                        logger.warning(f"Error extracting frame from video: {e}")
+                
+                # Fallback: create a text-based thumbnail
+                if self.moviepy_available:
+                    try:
+                        # Create a simple colored background with text
+                        text_clip = mpy.TextClip(
+                            title, 
+                            fontsize=60, 
+                            color='white',
+                            size=(1280, 720),
+                            bg_color='black'
+                        )
+                        text_clip.save_frame(str(output_path))
+                        return {
+                            "path": str(output_path),
+                            "title": title,
+                            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                    except Exception as e:
+                        logger.warning(f"Error creating text thumbnail: {e}")
+                
+                # If all else fails, write a placeholder
+                with open(output_path, 'w') as f:
+                    f.write("THUMBNAIL PLACEHOLDER")
+                
+                return {
+                    "path": str(output_path),
+                    "title": title,
+                    "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+            
+            except Exception as e:
+                logger.error(f"Simplified thumbnail generation failed: {e}")
+                return None
+        
+        # Original thumbnail implementation for non-Colab environments
         # In a real implementation, this would:
         # 1. Select the most visually appealing frame from animations
         # 2. Apply enhancements and text overlay

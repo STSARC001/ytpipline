@@ -38,10 +38,21 @@ class AIVoiceoverGenerator:
     
     def initialize_models(self):
         """Initialize TTS models based on configuration."""
+        # Check if we're in Google Colab
+        try:
+            import google.colab
+            in_colab = True
+            logger.info("Running in Google Colab environment - using lightweight TTS methods")
+            self.config["simplified_mode"] = True
+        except:
+            in_colab = False
+        
         # XTTS would be initialized here in a real implementation
+        # For Colab compatibility, we'll use a lightweight approach
         self.models["xtts"] = self.config.get("enable_xtts", True)
         
         # Bark would be initialized here in a real implementation
+        # For Colab compatibility, we'll use a lightweight approach
         self.models["bark"] = self.config.get("enable_bark", True)
         
         logger.info(f"TTS models initialized: XTTS={self.models['xtts']}, Bark={self.models['bark']}")
@@ -96,47 +107,50 @@ class AIVoiceoverGenerator:
         # Extract relevant content from the prompt
         title = prompt.get("title", "Untitled")
         description = prompt.get("description", "")
+        
+        # For Google Colab compatibility, let's create a very simple script
+        if self.config.get("simplified_mode", False):
+            # Create a short, simplified script
+            if description:
+                # Take the first few sentences from the description
+                sentences = description.split('.')
+                short_desc = '. '.join(sentences[:3]) + '.'
+                script = f"Welcome to {title}. {short_desc}"
+            else:
+                script = f"Welcome to {title}. This is an AI-generated video created with the YouTube Automation Pipeline."
+            
+            return script
+        
+        # Original script generation logic for non-Colab environments
         scenes = prompt.get("scenes", [])
         characters = prompt.get("characters", [])
         
-        # Create script structure
-        script = {
-            "title": title,
-            "intro": self._create_intro(title, description),
-            "segments": []
-        }
+        # Fallback if we don't have scene details
+        if not scenes:
+            return f"Welcome to {title}. {description}"
         
-        # Calculate available speaking time for each scene based on animations
-        scene_durations = {}
-        total_animation_duration = 0
+        # Create a script that follows the scene structure
+        script_parts = []
         
-        for anim in animations:
-            scene_idx = anim.get("scene_index", -1)
-            duration = anim.get("duration", 5)
-            
-            if scene_idx >= 0:
-                scene_durations[scene_idx] = duration
-                total_animation_duration += duration
+        # Add introduction
+        script_parts.append(f"Welcome to {title}.")
         
-        # Fill in scene narrations
-        for i, scene in enumerate(scenes):
-            # Get scene duration (if available)
-            duration = scene_durations.get(i, 5)
-            
-            # Create scene narration, adapted to fit the duration
-            narration = self._create_scene_narration(scene, duration, characters)
-            
-            script["segments"].append({
-                "scene_index": i,
-                "duration": duration,
-                "text": narration,
-                "emotion": self._determine_emotion(scene)
-            })
+        # Add a brief description if available
+        if description:
+            script_parts.append(description.split('.')[0] + '.')
         
-        # Add outro if total narration is short
-        if total_animation_duration > 0 and len(script["segments"]) > 0:
-            script["outro"] = self._create_outro(title, description)
-            
+        # Add narration for each scene
+        for scene in scenes:
+            scene_desc = scene.get("description", "").strip()
+            if scene_desc:
+                script_parts.append(scene_desc)
+        
+        # Add a conclusion
+        script_parts.append("Thank you for watching this AI-generated video.")
+        
+        # Join all parts
+        script = " ".join(script_parts)
+        
         return script
     
     def _create_intro(self, title, description):
@@ -243,86 +257,114 @@ class AIVoiceoverGenerator:
     
     def _generate_with_xtts(self, script, prompt_id, animations):
         """Generate voiceover using XTTS."""
-        # In a real implementation, this would use XTTS
-        # For demonstration purposes, we'll simulate the output
-        
         logger.info(f"Generating voiceover with XTTS for: {prompt_id}")
         
-        # Calculate total duration
-        total_duration = sum(segment.get("duration", 5) for segment in script.get("segments", []))
+        # For Google Colab, create a simplified placeholder
+        if self.config.get("simplified_mode", False):
+            # Just write the script to a text file with mp3 extension
+            output_path = self.output_dir / f"{prompt_id}_voiceover.mp3"
+            with open(output_path, 'w') as f:
+                f.write(f"XTTS VOICEOVER:\n{script}")
+            
+            # Calculate a rough duration based on words
+            words = script.split()
+            duration = len(words) * 0.5  # Rough estimate: 0.5 seconds per word
+            
+            return {
+                "id": f"{prompt_id}_voiceover",
+                "path": str(output_path),
+                "engine": "xtts_simulated",
+                "prompt_id": prompt_id,
+                "script": script,
+                "duration": duration,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
         
-        # Ensure output directory exists
-        output_path = self.output_dir / f"{prompt_id}_voiceover.mp3"
-        
-        # In a real implementation, we would:
-        # 1. Convert script to SSML with emotion markers
-        # 2. Call XTTS to generate audio
-        # 3. Add effects and process audio
-        
-        # Simulate processing time
-        time.sleep(1)
-        
-        # Create a placeholder audio file (silent)
-        self._create_silent_audio(output_path, total_duration)
-        
-        # Create timestamps for synchronization
-        timestamps = self._create_timestamps(script, animations)
-        
-        return {
-            "id": f"{prompt_id}_voiceover",
-            "path": str(output_path),
-            "engine": "xtts_simulated",
-            "prompt_id": prompt_id,
-            "script": script,
-            "timestamps": timestamps,
-            "duration": total_duration,
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
-        }
+        # Real implementation would use XTTS here
+        try:
+            # Simulate processing time
+            time.sleep(1)
+            
+            # Create placeholder audio
+            output_path = self.output_dir / f"{prompt_id}_voiceover.mp3"
+            with open(output_path, 'w') as f:
+                f.write(f"XTTS VOICEOVER:\n{script}")
+            
+            # Calculate a rough duration based on words
+            words = script.split()
+            duration = len(words) * 0.5  # Rough estimate: 0.5 seconds per word
+            
+            return {
+                "id": f"{prompt_id}_voiceover",
+                "path": str(output_path),
+                "engine": "xtts_simulated",
+                "prompt_id": prompt_id,
+                "script": script,
+                "duration": duration,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+        except Exception as e:
+            logger.error(f"Error generating XTTS voiceover: {e}")
+            return self._generate_fallback(script, prompt_id, animations)
     
     def _generate_with_bark(self, script, prompt_id, animations):
         """Generate voiceover using Bark AI."""
-        # In a real implementation, this would use Bark
-        # For demonstration purposes, we'll simulate the output
-        
         logger.info(f"Generating voiceover with Bark for: {prompt_id}")
         
-        # Calculate total duration
-        total_duration = sum(segment.get("duration", 5) for segment in script.get("segments", []))
+        # For Google Colab, create a simplified placeholder
+        if self.config.get("simplified_mode", False):
+            # Just write the script to a text file with mp3 extension
+            output_path = self.output_dir / f"{prompt_id}_voiceover.mp3"
+            with open(output_path, 'w') as f:
+                f.write(f"BARK VOICEOVER:\n{script}")
+            
+            # Calculate a rough duration based on words
+            words = script.split()
+            duration = len(words) * 0.5  # Rough estimate: 0.5 seconds per word
+            
+            return {
+                "id": f"{prompt_id}_voiceover",
+                "path": str(output_path),
+                "engine": "bark_simulated",
+                "prompt_id": prompt_id,
+                "script": script,
+                "duration": duration,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
         
-        # Ensure output directory exists
-        output_path = self.output_dir / f"{prompt_id}_voiceover.mp3"
-        
-        # In a real implementation, we would:
-        # 1. Convert script to Bark's format
-        # 2. Call Bark to generate audio with appropriate voice and style
-        # 3. Add effects and process audio
-        
-        # Simulate processing time
-        time.sleep(1)
-        
-        # Create a placeholder audio file (silent)
-        self._create_silent_audio(output_path, total_duration)
-        
-        # Create timestamps for synchronization
-        timestamps = self._create_timestamps(script, animations)
-        
-        return {
-            "id": f"{prompt_id}_voiceover",
-            "path": str(output_path),
-            "engine": "bark_simulated",
-            "prompt_id": prompt_id,
-            "script": script,
-            "timestamps": timestamps,
-            "duration": total_duration,
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
-        }
+        # Real implementation would use Bark here
+        try:
+            # Simulate processing time
+            time.sleep(1)
+            
+            # Create placeholder audio
+            output_path = self.output_dir / f"{prompt_id}_voiceover.mp3"
+            with open(output_path, 'w') as f:
+                f.write(f"BARK VOICEOVER:\n{script}")
+            
+            # Calculate a rough duration based on words
+            words = script.split()
+            duration = len(words) * 0.5  # Rough estimate: 0.5 seconds per word
+            
+            return {
+                "id": f"{prompt_id}_voiceover",
+                "path": str(output_path),
+                "engine": "bark_simulated",
+                "prompt_id": prompt_id,
+                "script": script,
+                "duration": duration,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+        except Exception as e:
+            logger.error(f"Error generating Bark voiceover: {e}")
+            return self._generate_fallback(script, prompt_id, animations)
     
     def _generate_fallback(self, script, prompt_id, animations):
         """Generate a simple fallback voiceover when TTS engines are unavailable."""
         logger.info(f"Generating fallback voiceover for: {prompt_id}")
         
         # Calculate total duration
-        total_duration = sum(segment.get("duration", 5) for segment in script.get("segments", []))
+        total_duration = sum(segment.get("duration", 5) for segment in animations)
         
         # Ensure output directory exists
         output_path = self.output_dir / f"{prompt_id}_voiceover.mp3"
@@ -370,7 +412,7 @@ class AIVoiceoverGenerator:
         current_time += intro_duration
         
         # Calculate segment timestamps
-        for segment in script.get("segments", []):
+        for segment in animations:
             start_time = current_time
             duration = segment.get("duration", 5)
             end_time = start_time + duration

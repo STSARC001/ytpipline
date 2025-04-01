@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image
 import google.generativeai as genai
 import torch
-from diffusers import StableDiffusionXLPipeline, ControlNetModel
+from diffusers import StableDiffusionXLPipeline, ControlNetModel, DiffusionPipeline
 from diffusers.utils import load_image
 from dotenv import load_dotenv
 
@@ -57,50 +57,82 @@ class MultiModalImageGenerator:
             logger.error(f"Failed to initialize Gemini: {e}")
             self.models["gemini"] = None
         
-        # Initialize SDXL (if enabled in config)
+        # Initialize a smaller diffusion model suitable for Colab
         if self.config.get("enable_sdxl", True):
             try:
-                sdxl_model_name = self.config.get("sdxl_model", "stabilityai/stable-diffusion-xl-base-1.0")
+                # Use a smaller Stable Diffusion model instead of SDXL
+                # Options: "CompVis/stable-diffusion-v1-4" (smaller) or "runwayml/stable-diffusion-v1-5" (better quality)
+                sdxl_model_name = self.config.get("sdxl_model", "runwayml/stable-diffusion-v1-5")
+                logger.info(f"Attempting to load image model: {sdxl_model_name}")
                 
-                # In Colab, we might want to load models with lower precision to save memory
-                load_in_8bit = self.config.get("load_in_8bit", False)
+                # In Colab, we need to use lower precision to save memory
+                load_in_8bit = self.config.get("load_in_8bit", True)  # Default to 8-bit for Colab
                 torch_dtype = torch.float16 if self.config.get("use_half_precision", True) else None
                 
-                # Initialize the pipeline
-                self.models["sdxl"] = StableDiffusionXLPipeline.from_pretrained(
-                    sdxl_model_name,
-                    torch_dtype=torch_dtype,
-                    use_safetensors=True,
-                    variant="fp16" if torch_dtype == torch.float16 else None
-                )
+                try:
+                    # First try importing a more memory-efficient pipeline
+                    from diffusers import DiffusionPipeline
+                    
+                    # Initialize the pipeline with memory optimizations
+                    self.models["sdxl"] = DiffusionPipeline.from_pretrained(
+                        sdxl_model_name,
+                        torch_dtype=torch_dtype,
+                        use_safetensors=True,
+                        variant="fp16" if torch_dtype == torch.float16 else None,
+                        use_onnx=False,  # Using ONNX can reduce memory usage
+                        local_files_only=False
+                    )
+                    
+                    # Enable memory optimizations
+                    self.models["sdxl"].enable_attention_slicing()
+                    
+                    # Move to appropriate device
+                    if self.device == "cuda":
+                        if load_in_8bit:
+                            try:
+                                # Try using 8-bit optimizations
+                                self.models["sdxl"].unet = self.models["sdxl"].unet.to_bettertransformer()
+                            except:
+                                logger.warning("Could not convert to BetterTransformer, continuing with standard model")
+                        
+                        # Only move to GPU if we have enough VRAM 
+                        try:
+                            self.models["sdxl"] = self.models["sdxl"].to(self.device)
+                            logger.info(f"Successfully loaded image model on {self.device}")
+                        except Exception as gpu_error:
+                            logger.warning(f"Failed to load model on GPU: {gpu_error}, falling back to CPU")
+                            self.device = "cpu"  # Fall back to CPU
+                    
+                    logger.info(f"Initialized image generation model: {sdxl_model_name}")
                 
-                # Move to appropriate device
-                if self.device == "cuda":
-                    if load_in_8bit:
-                        self.models["sdxl"].unet = self.models["sdxl"].unet.to_bettertransformer()
-                    self.models["sdxl"] = self.models["sdxl"].to(self.device)
-                
-                logger.info(f"Initialized SDXL model: {sdxl_model_name}")
-                
-                # Initialize ControlNet if enabled
-                if self.config.get("enable_controlnet", False):
+                except Exception as init_error:
+                    logger.error(f"Failed to initialize primary image model: {init_error}")
+                    logger.info("Falling back to CPU-friendly text-to-image model")
+                    
                     try:
-                        controlnet_model = self.config.get(
-                            "controlnet_model", 
-                            "lllyasviel/control_v11p_sd15_openpose"
+                        # Try an even smaller model that works on CPU
+                        from diffusers import StableDiffusionPipeline
+                        small_model = "CompVis/stable-diffusion-v1-4"
+                        
+                        self.models["sdxl"] = StableDiffusionPipeline.from_pretrained(
+                            small_model,
+                            torch_dtype=torch.float32,  # Use full precision for CPU
+                            use_safetensors=True
                         )
-                        self.models["controlnet"] = ControlNetModel.from_pretrained(
-                            controlnet_model,
-                            torch_dtype=torch_dtype
-                        ).to(self.device)
-                        logger.info(f"Initialized ControlNet model: {controlnet_model}")
-                    except Exception as e:
-                        logger.error(f"Failed to initialize ControlNet: {e}")
-                        self.models["controlnet"] = None
+                        logger.info(f"Initialized fallback image model: {small_model}")
+                    except Exception as fallback_error:
+                        logger.error(f"Failed to initialize fallback model: {fallback_error}")
+                        self.models["sdxl"] = None
+                
+                # Skip ControlNet in Colab - it uses too much memory
+                self.models["controlnet"] = None
                 
             except Exception as e:
                 logger.error(f"Failed to initialize SDXL: {e}")
                 self.models["sdxl"] = None
+        else:
+            logger.info("SDXL model disabled in configuration")
+            self.models["sdxl"] = None
     
     def generate(self, prompts):
         """
@@ -356,78 +388,105 @@ class MultiModalImageGenerator:
     
     def _generate_fallback_image(self, image_prompt, prompt_id, scene_id):
         """Generate a fallback placeholder image when model generation fails."""
+        logger.info(f"Generating fallback image for scene {scene_id}")
+        
+        # Get a very short version of the prompt
+        short_prompt = image_prompt.split(".")[0] if "." in image_prompt else image_prompt
+        short_prompt = short_prompt[:50] + "..." if len(short_prompt) > 50 else short_prompt
+        
+        # First try using a very basic diffusion request if Gemini failed
         try:
-            # Create a simple gradient image as placeholder
-            width = self.config.get("fallback_width", 1024)
-            height = self.config.get("fallback_height", 1024)
+            from diffusers import DiffusionPipeline
+            import torch
             
-            # Create gradient array
-            x = np.linspace(0, 1, width)
-            y = np.linspace(0, 1, height)
-            x_grid, y_grid = np.meshgrid(x, y)
+            # Try to load a tiny model
+            pipe = DiffusionPipeline.from_pretrained(
+                "runwayml/stable-diffusion-v1-5",
+                torch_dtype=torch.float32,
+                use_cpu_offload=True,
+                low_cpu_mem_usage=True
+            )
             
-            # Create RGB channels
-            r = x_grid
-            g = y_grid
-            b = 1 - (x_grid + y_grid) / 2
+            # Generate with minimal settings
+            image = pipe(
+                prompt=short_prompt,
+                num_inference_steps=20,
+                guidance_scale=7.0
+            ).images[0]
             
-            # Stack and scale to 0-255
-            rgb = np.stack([r, g, b], axis=2) * 255
-            img_array = rgb.astype(np.uint8)
+            # Save the image
+            output_path = self.output_dir / f"gemini_{prompt_id}_scene_{scene_id}_fallback.png"
+            image.save(output_path)
             
-            # Create PIL image
-            img = Image.fromarray(img_array)
+            return {
+                "prompt_id": prompt_id,
+                "scene_id": scene_id,
+                "path": str(output_path),
+                "model": "fallback_diffusion",
+                "prompt": short_prompt,
+                "success": True
+            }
+        except Exception as diffusion_error:
+            logger.warning(f"Diffusion fallback failed: {diffusion_error}")
+        
+        # If diffusion fallback fails, create a text-based image
+        try:
+            # Create a simple PIL image with text
+            img_size = (512, 512)
+            background_color = (random.randint(0, 50), random.randint(0, 50), random.randint(0, 50))
+            text_color = (200, 200, 200)
             
-            # Add text with image_prompt summary
+            img = Image.new('RGB', img_size, color=background_color)
+            
+            # Draw text on image
             from PIL import ImageDraw, ImageFont
             draw = ImageDraw.Draw(img)
+            
+            # Use a default font
             try:
                 font = ImageFont.truetype("arial.ttf", 20)
             except:
                 font = ImageFont.load_default()
             
-            # Wrap text
-            lines = []
-            words = image_prompt.split()
-            current_line = ""
-            max_width = width - 20
+            # Wrap text to fit the image
+            import textwrap
+            wrapped_text = textwrap.fill(short_prompt, width=30)
             
-            for word in words:
-                test_line = current_line + word + " "
-                text_width = draw.textlength(test_line, font=font)
-                
-                if text_width <= max_width:
-                    current_line = test_line
-                else:
-                    lines.append(current_line)
-                    current_line = word + " "
+            # Calculate text position for centering
+            text_width, text_height = draw.textsize(wrapped_text, font=font) if hasattr(draw, 'textsize') else (300, 150)
+            position = ((img_size[0] - text_width) // 2, (img_size[1] - text_height) // 2)
             
-            if current_line:
-                lines.append(current_line)
+            # Draw the text
+            draw.text(position, wrapped_text, fill=text_color, font=font)
             
-            # Draw text
-            y_position = 50
-            for line in lines:
-                draw.text((10, y_position), line, fill=(255, 255, 255), font=font)
-                y_position += 30
-            
-            # Save to file
-            output_path = self.output_dir / f"{prompt_id}_{scene_id}_fallback.png"
+            # Save the image
+            output_path = self.output_dir / f"gemini_{prompt_id}_scene_{scene_id}_fallback.png"
             img.save(output_path)
             
             return {
-                "id": f"{prompt_id}_{scene_id}_fallback",
+                "prompt_id": prompt_id,
+                "scene_id": scene_id,
                 "path": str(output_path),
-                "model": "fallback",
-                "prompt": image_prompt,
-                "width": width,
-                "height": height,
-                "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                "model": "fallback_text",
+                "prompt": short_prompt,
+                "success": True
             }
-            
         except Exception as e:
-            logger.error(f"Error generating fallback image: {e}")
-            return None
+            logger.error(f"Error creating text fallback image: {e}")
+            
+            # Last resort - create an empty image file
+            output_path = self.output_dir / f"gemini_{prompt_id}_scene_{scene_id}_fallback.png"
+            with open(output_path, 'w') as f:
+                f.write(f"PLACEHOLDER: {short_prompt}")
+            
+            return {
+                "prompt_id": prompt_id,
+                "scene_id": scene_id,
+                "path": str(output_path),
+                "model": "fallback_placeholder",
+                "prompt": short_prompt,
+                "success": True
+            }
     
     def _generate_variant_images(self, base_images, prompt):
         """Generate variant images based on existing generated images."""

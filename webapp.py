@@ -126,7 +126,7 @@ class YouTubeAutomationWebApp:
                     label="YAML Configuration",
                     value=self._load_config_as_text(),
                     info="Edit and save to modify pipeline configuration",
-                    height=600
+                    lines=25
                 )
                 
                 config_save_btn = gr.Button("Save Configuration")

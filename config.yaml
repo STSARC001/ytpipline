@@ -1,0 +1,67 @@
+# YouTube Automation Pipeline Configuration
+
+# Main pipeline settings
+output_directory: "output"
+
+# Prompt Generator Settings
+prompt_generator:
+  gemini_model: "gemini-1.5-flash"
+  llm_model: "meta-llama/Llama-3-8b-instruct"
+  load_llm_model: false  # Set to true to load model locally, false to use API
+  llm_api_endpoint: ""   # Fill in for API-based access
+  num_prompts: 3         # Number of prompts to generate
+
+# Image Generator Settings
+image_generator:
+  output_dir: "output/images"
+  gemini_model: "gemini-1.5-flash"
+  enable_sdxl: true
+  sdxl_model: "stabilityai/stable-diffusion-xl-base-1.0"
+  load_in_8bit: false
+  use_half_precision: true
+  enable_controlnet: false
+  controlnet_model: "lllyasviel/control_v11p_sd15_openpose"
+  preferred_model: "alternate"  # "gemini", "sdxl", or "alternate"
+  gemini_temperature: 0.7
+  sdxl_steps: 30
+  sdxl_guidance_scale: 7.5
+  sdxl_width: 1024
+  sdxl_height: 1024
+  sdxl_negative_prompt: "blurry, distorted, disfigured, bad anatomy, watermark, signature, text, logo"
+  generate_variants: true
+  num_variants: 2
+  add_quality_modifiers: true
+
+# Animator Settings
+animator:
+  output_dir: "output/animations"
+  fps: 24
+  duration: 5  # seconds per animation
+  enable_animatediff: true
+  enable_rife: true
+  enable_depth: true
+
+# Voiceover Settings
+voiceover:
+  output_dir: "output/audio"
+  tts_engine: "xtts"  # "xtts" or "bark"
+  enable_xtts: true
+  enable_bark: true
+
+# Video Compiler Settings
+video_compiler:
+  output_dir: "output/video"
+  ffmpeg_path: "ffmpeg"
+  transitions:
+    - "fade"
+    - "dissolve"
+    - "wipe"
+  effects:
+    - "motion_blur"
+    - "color_enhance"
+    - "dynamic_zoom"
+
+# Google Drive Uploader Settings
+drive_uploader:
+  output_dir: "output/metadata"
+  credentials_file: "credentials.json"  # Path to Google Drive API credentials
